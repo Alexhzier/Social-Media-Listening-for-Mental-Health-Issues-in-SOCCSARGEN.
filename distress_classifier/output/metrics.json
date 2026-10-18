@@ -1,0 +1,55 @@
+{
+  "accuracy": 0.9290060851926978,
+  "precision_macro": 0.9295112175417899,
+  "recall_macro": 0.9265628965680737,
+  "f1_macro": 0.9277722886166831,
+  "precision_weighted": 0.9295867612722348,
+  "recall_weighted": 0.9290060851926978,
+  "f1_weighted": 0.9290352360313207,
+  "confusion_matrix": {
+    "labels": [
+      "Depression",
+      "Stress",
+      "Anxiety",
+      "Addiction",
+      "Suicidal Behavior"
+    ],
+    "matrix": [
+      [
+        93,
+        1,
+        1,
+        1,
+        0
+      ],
+      [
+        0,
+        70,
+        11,
+        0,
+        1
+      ],
+      [
+        1,
+        5,
+        101,
+        0,
+        3
+      ],
+      [
+        2,
+        2,
+        1,
+        101,
+        0
+      ],
+      [
+        1,
+        0,
+        2,
+        3,
+        93
+      ]
+    ]
+  }
+}

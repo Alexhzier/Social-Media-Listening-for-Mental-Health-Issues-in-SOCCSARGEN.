@@ -1,0 +1,1201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Highcharts Map - Soccsksargen, Philippines</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <script src="./node_modules/highcharts/highmaps.js"></script>
+    <script src="./node_modules/highcharts/modules/exporting.js"></script>
+    <script src="./node_modules/highcharts/modules/offline-exporting.js"></script>
+    <script src="./node_modules/highcharts/modules/accessibility.js"></script>
+    <script src="./node_modules/highcharts/themes/adaptive.js"></script>
+    <script src="condition-data.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🗺️ Areas with possible Mental Illness</h1>
+            <p class="subtitle">Soccsksargen (Region XII), Philippines</p>
+        </header>
+
+        <!-- Summary cards for each condition -->
+        <section id="condition-stats" class="condition-stats" aria-label="Key statistics per condition"></section>
+
+        <div class="import-wrapper">
+            <label for="results-file">Results CSV:</label>
+            <input id="results-file" type="file" accept=".csv,text/csv">
+            <label class="include-uncertain-toggle" for="view-subset">
+                <input id="view-subset" type="checkbox">
+                View Subset
+            </label>
+            <button id="load-results-btn" type="button">Load Into Map</button>
+            <button id="reset-results-btn" type="button">Use Default Data</button>
+        </div>
+
+        <div id="import-status" class="import-status" aria-live="polite"></div>
+
+        <div id="region-info" class="region-info" aria-live="polite"></div>
+
+        <div class="visual-grid">
+            <aside class="year-panel">
+                <h2 class="year-title">Year Trend</h2>
+                <p class="year-subtitle">Posts by year and category</p>
+                <div id="year-trend-chart" class="year-chart"></div>
+            </aside>
+
+            <div class="map-wrapper">
+                <div id="container" class="map-container"></div>
+            </div>
+
+            <aside class="platform-panel">
+                <h2 class="platform-title">Platform Distribution</h2>
+                <p class="platform-subtitle">Posts by platform and category</p>
+                <div id="platform-chart" class="platform-chart"></div>
+            </aside>
+        </div>
+
+        <footer>
+            <p>Powered by <a href="https://www.highcharts.com/" target="_blank">Highcharts</a></p>
+        </footer>
+    </div>
+
+    <script>
+        (async () => {
+            const TOPOLOGY_URLS = [
+                './ph-all.topo.json',
+                'ph-all.topo.json',
+                'https://code.highcharts.com/mapdata/countries/ph/ph-all.topo.json'
+            ];
+            const LOCAL_SOCCSKSARGEN_MAP = {
+                type: 'FeatureCollection',
+                features: [
+                    {
+                        type: 'Feature',
+                        properties: { 'hc-key': 'ph-sc', name: 'South Cotabato' },
+                        geometry: {
+                            type: 'Polygon',
+                            coordinates: [[[124.75, 6.05], [125.25, 6.05], [125.25, 6.65], [124.75, 6.65], [124.75, 6.05]]]
+                        }
+                    },
+                    {
+                        type: 'Feature',
+                        properties: { 'hc-key': 'ph-sg', name: 'Sarangani' },
+                        geometry: {
+                            type: 'Polygon',
+                            coordinates: [[[124.95, 5.35], [125.55, 5.35], [125.55, 6.05], [124.95, 6.05], [124.95, 5.35]]]
+                        }
+                    },
+                    {
+                        type: 'Feature',
+                        properties: { 'hc-key': 'ph-6990', name: 'General Santos City' },
+                        geometry: {
+                            type: 'Polygon',
+                            coordinates: [[[125.07, 6.05], [125.22, 6.05], [125.22, 6.17], [125.07, 6.17], [125.07, 6.05]]]
+                        }
+                    }
+                ]
+            };
+            const SOCCSKSARGEN_DISPLAY_KEYS = new Set(['ph-sc', 'ph-sg', 'ph-6990']);
+            const SOCCSKSARGEN_CLICKABLE_KEYS = new Set(['ph-sc', 'ph-sg', 'ph-6990']);
+            const BASE_CONDITION_KEYS = ['depression', 'stress', 'anxiety', 'suicidal-behavior', 'addiction'];
+            const REGION_KEYS = ['ph-sc', 'ph-sg', 'ph-6990'];
+            const REGION_NAME_BY_KEY = {
+                'ph-sc': 'South Cotabato',
+                'ph-sg': 'Sarangani',
+                'ph-6990': 'General Santos City'
+            };
+            const CONDITION_LABELS = {
+                depression: 'Depression',
+                stress: 'Stress',
+                anxiety: 'Anxiety',
+                'suicidal-behavior': 'Suicidal behavior',
+                addiction: 'Addiction'
+            };
+            const regionInfoEl = document.getElementById('region-info');
+            const importStatusEl = document.getElementById('import-status');
+            const resultsFileEl = document.getElementById('results-file');
+            const viewSubsetEl = document.getElementById('view-subset');
+            const loadResultsBtnEl = document.getElementById('load-results-btn');
+            const resetResultsBtnEl = document.getElementById('reset-results-btn');
+            const platformChartEl = document.getElementById('platform-chart');
+            const yearTrendChartEl = document.getElementById('year-trend-chart');
+            let viewSubset = Boolean(viewSubsetEl && viewSubsetEl.checked);
+            let platformDistribution = {};
+            let yearTrendDistribution = {};
+            let platformChart = null;
+            let yearTrendChart = null;
+            let importedRowsCache = null;
+            let importedSourceLabel = '';
+
+            // Data loaded from condition-data.js (edit amounts there)
+            const defaultConditionData = JSON.parse(JSON.stringify(window.conditionData || {}));
+            let fullConditionData = normalizeConditionData(defaultConditionData);
+            let conditionData = normalizeConditionData(fullConditionData);
+
+            // Track which region is currently selected in the map
+            let activeRegionKey = null;
+
+            function normalizeConditionKey(raw) {
+                const value = String(raw || '').trim().toLowerCase();
+                if (!value) return '';
+                if (value.includes('suicidal')) return 'suicidal-behavior';
+                if (value.includes('depress')) return 'depression';
+                if (value.includes('stress')) return 'stress';
+                if (value.includes('anx')) return 'anxiety';
+                if (value.includes('addict')) return 'addiction';
+                return value.replace(/[^a-z]+/g, '-');
+            }
+
+            function normalizeLocationKey(raw) {
+                const value = String(raw || '').trim().toLowerCase();
+                if (!value) return '';
+                if (value === 'ph-sc' || value === 'ph-sg' || value === 'ph-6990') return value;
+
+                const compact = value.replace(/[^a-z0-9]+/g, ' ').trim();
+                if (compact.includes('south cotabato')) return 'ph-sc';
+                if (compact.includes('sarangani')) return 'ph-sg';
+                if (compact.includes('general santos') || compact.includes('gensan')) return 'ph-6990';
+                return '';
+            }
+
+            function getConditionKeys() {
+                return [...BASE_CONDITION_KEYS];
+            }
+
+            function makeEmptyConditionData() {
+                const base = {};
+                getConditionKeys().forEach(condition => {
+                    base[condition] = REGION_KEYS.map(region => [region, 0]);
+                });
+                return base;
+            }
+
+            function normalizeConditionData(input) {
+                const normalized = makeEmptyConditionData();
+                if (!input || typeof input !== 'object') return normalized;
+
+                Object.entries(input).forEach(([rawCondition, entries]) => {
+                    const condition = normalizeConditionKey(rawCondition);
+                    if (!Object.prototype.hasOwnProperty.call(normalized, condition) || !Array.isArray(entries)) return;
+                    const regionMap = new Map(normalized[condition]);
+                    entries.forEach(entry => {
+                        if (!Array.isArray(entry) || entry.length < 2) return;
+                        const region = normalizeLocationKey(entry[0]) || String(entry[0] || '').trim();
+                        const value = Number(entry[1]);
+                        if (!REGION_KEYS.includes(region) || !Number.isFinite(value)) return;
+                        regionMap.set(region, value);
+                    });
+                    normalized[condition] = REGION_KEYS.map(region => [region, regionMap.get(region) || 0]);
+                });
+                return normalized;
+            }
+
+            function rebuildVisibleConditionData() {
+                conditionData = normalizeConditionData(fullConditionData);
+            }
+
+            function getMapScopeLabel() {
+                return viewSubset
+                    ? 'all categories (including subset assignments)'
+                    : 'all categories (subset hidden)';
+            }
+
+            function getCombinedRegionData() {
+                const totals = new Map(REGION_KEYS.map(region => [region, 0]));
+                getConditionKeys().forEach(condition => {
+                    (conditionData[condition] || []).forEach(entry => {
+                        if (!Array.isArray(entry)) return;
+                        const region = entry[0];
+                        const value = Number(entry[1]);
+                        if (!REGION_KEYS.includes(region) || !Number.isFinite(value)) return;
+                        totals.set(region, (totals.get(region) || 0) + value);
+                    });
+                });
+                return REGION_KEYS.map(region => [region, totals.get(region) || 0]);
+            }
+
+            function renderPlatformChart() {
+                if (!platformChartEl) return;
+                const activeConditions = getConditionKeys();
+                const platforms = Object.keys(platformDistribution)
+                    .sort((a, b) => {
+                        const totalA = activeConditions.reduce(
+                            (sum, key) => sum + ((platformDistribution[a] && platformDistribution[a][key]) || 0),
+                            0
+                        );
+                        const totalB = activeConditions.reduce(
+                            (sum, key) => sum + ((platformDistribution[b] && platformDistribution[b][key]) || 0),
+                            0
+                        );
+                        return totalB - totalA;
+                    })
+                    .filter(platform => activeConditions.some(key => ((platformDistribution[platform] || {})[key] || 0) > 0));
+
+                if (!platforms.length) {
+                    if (platformChart && typeof platformChart.destroy === 'function') {
+                        platformChart.destroy();
+                        platformChart = null;
+                    }
+                    platformChartEl.innerHTML = '<p style="margin:10px 0;color:#6b7280;font-size:0.9rem;">No platform data loaded yet.</p>';
+                    return;
+                }
+
+                if (typeof Highcharts === 'undefined' || typeof Highcharts.chart !== 'function') {
+                    const lines = platforms.map(platform => {
+                        const total = activeConditions.reduce(
+                            (sum, key) => sum + ((platformDistribution[platform] && platformDistribution[platform][key]) || 0),
+                            0
+                        );
+                        return `<li><strong>${platform}</strong>: ${total}</li>`;
+                    });
+                    platformChartEl.innerHTML = `<ul style="margin:8px 0 0 18px;padding:0;color:#334155;">${lines.join('')}</ul>`;
+                    return;
+                }
+
+                const series = activeConditions.map(key => ({
+                    name: CONDITION_LABELS[key] || key,
+                    data: platforms.map(platform => (platformDistribution[platform] && platformDistribution[platform][key]) || 0),
+                }));
+
+                if (platformChart && typeof platformChart.destroy === 'function') {
+                    platformChart.destroy();
+                }
+
+                platformChart = Highcharts.chart('platform-chart', {
+                    chart: {
+                        type: 'column',
+                        backgroundColor: 'transparent',
+                        spacing: [8, 8, 8, 8],
+                    },
+                    title: { text: '' },
+                    credits: { enabled: false },
+                    legend: {
+                        align: 'center',
+                        verticalAlign: 'bottom',
+                        itemStyle: { fontSize: '11px' },
+                    },
+                    xAxis: {
+                        categories: platforms,
+                        labels: { style: { fontSize: '11px' } },
+                        title: { text: 'Platform' },
+                    },
+                    yAxis: {
+                        min: 0,
+                        title: { text: 'Post Count' },
+                        allowDecimals: false,
+                    },
+                    tooltip: {
+                        shared: true,
+                        useHTML: true,
+                        pointFormatter: function () {
+                            return `<span style="color:${this.color}">\u25cf</span> ${this.series.name}: <b>${this.y}</b><br/>`;
+                        }
+                    },
+                    plotOptions: {
+                        column: {
+                            stacking: 'normal',
+                            borderWidth: 0,
+                            pointPadding: 0.06,
+                        }
+                    },
+                    series
+                });
+            }
+
+            function normalizeYear(rawDate) {
+                const text = String(rawDate || '').trim();
+                if (!text) return 'Unknown';
+                const match = text.match(/\b(19|20)\d{2}\b/);
+                return match ? match[0] : 'Unknown';
+            }
+
+            function sortYearKeys(years) {
+                return years.sort((a, b) => {
+                    const aUnknown = a === 'Unknown';
+                    const bUnknown = b === 'Unknown';
+                    if (aUnknown && bUnknown) return 0;
+                    if (aUnknown) return 1;
+                    if (bUnknown) return -1;
+                    return Number(a) - Number(b);
+                });
+            }
+
+            function renderYearTrendChart() {
+                if (!yearTrendChartEl) return;
+                const activeConditions = getConditionKeys();
+                const years = sortYearKeys(
+                    Object.keys(yearTrendDistribution).filter(year =>
+                        activeConditions.some(key => ((yearTrendDistribution[year] || {})[key] || 0) > 0)
+                    )
+                );
+
+                if (!years.length) {
+                    if (yearTrendChart && typeof yearTrendChart.destroy === 'function') {
+                        yearTrendChart.destroy();
+                        yearTrendChart = null;
+                    }
+                    yearTrendChartEl.innerHTML = '<p style="margin:10px 0;color:#6b7280;font-size:0.9rem;">No year data loaded yet.</p>';
+                    return;
+                }
+
+                if (typeof Highcharts === 'undefined' || typeof Highcharts.chart !== 'function') {
+                    const lines = years.map(year => {
+                        const total = activeConditions.reduce(
+                            (sum, key) => sum + ((yearTrendDistribution[year] && yearTrendDistribution[year][key]) || 0),
+                            0
+                        );
+                        return `<li><strong>${year}</strong>: ${total}</li>`;
+                    });
+                    yearTrendChartEl.innerHTML = `<ul style="margin:8px 0 0 18px;padding:0;color:#334155;">${lines.join('')}</ul>`;
+                    return;
+                }
+
+                const series = activeConditions.map(key => ({
+                    name: CONDITION_LABELS[key] || key,
+                    data: years.map(year => (yearTrendDistribution[year] && yearTrendDistribution[year][key]) || 0),
+                }));
+
+                if (yearTrendChart && typeof yearTrendChart.destroy === 'function') {
+                    yearTrendChart.destroy();
+                }
+
+                yearTrendChart = Highcharts.chart('year-trend-chart', {
+                    chart: {
+                        type: 'area',
+                        backgroundColor: 'transparent',
+                        spacing: [8, 8, 8, 8],
+                    },
+                    title: { text: '' },
+                    credits: { enabled: false },
+                    legend: {
+                        align: 'center',
+                        verticalAlign: 'bottom',
+                        itemStyle: { fontSize: '11px' },
+                    },
+                    xAxis: {
+                        categories: years,
+                        labels: { style: { fontSize: '11px' } },
+                        title: { text: 'Year' },
+                    },
+                    yAxis: {
+                        min: 0,
+                        title: { text: 'Post Count' },
+                        allowDecimals: false,
+                    },
+                    tooltip: {
+                        shared: true,
+                        useHTML: true,
+                        pointFormatter: function () {
+                            return `<span style="color:${this.color}">\u25cf</span> ${this.series.name}: <b>${this.y}</b><br/>`;
+                        }
+                    },
+                    plotOptions: {
+                        area: {
+                            stacking: 'normal',
+                            marker: { enabled: false },
+                            lineWidth: 1.5,
+                        }
+                    },
+                    series
+                });
+            }
+
+            function parseCsv(text) {
+                const rows = [];
+                let row = [];
+                let cell = '';
+                let inQuotes = false;
+                for (let i = 0; i < text.length; i += 1) {
+                    const ch = text[i];
+                    if (ch === '"') {
+                        if (inQuotes && text[i + 1] === '"') {
+                            cell += '"';
+                            i += 1;
+                        } else {
+                            inQuotes = !inQuotes;
+                        }
+                    } else if (ch === ',' && !inQuotes) {
+                        row.push(cell);
+                        cell = '';
+                    } else if ((ch === '\n' || ch === '\r') && !inQuotes) {
+                        if (ch === '\r' && text[i + 1] === '\n') i += 1;
+                        row.push(cell);
+                        rows.push(row);
+                        row = [];
+                        cell = '';
+                    } else {
+                        cell += ch;
+                    }
+                }
+                if (cell.length || row.length) {
+                    row.push(cell);
+                    rows.push(row);
+                }
+                return rows;
+            }
+
+            function findHeaderIndex(headers, candidates) {
+                const lowered = headers.map(h => String(h || '').trim().toLowerCase());
+                for (const candidate of candidates) {
+                    const idx = lowered.indexOf(candidate.toLowerCase());
+                    if (idx >= 0) return idx;
+                }
+                return -1;
+            }
+
+            function showImportStatus(message, isError) {
+                if (!importStatusEl) return;
+                importStatusEl.textContent = message || '';
+                importStatusEl.classList.toggle('visible', Boolean(message));
+                importStatusEl.classList.toggle('error', Boolean(isError));
+            }
+
+            // Build a stats strip that shows the count per condition
+            // If a regionKey is provided, it shows values for that region only.
+            // Otherwise, it shows totals across all regions.
+            function renderConditionStats(regionKey, regionName) {
+                const statsContainer = document.getElementById('condition-stats');
+                if (!statsContainer || !conditionData) return;
+
+                const cardsHtml = getConditionKeys().map((key) => {
+                    const regions = conditionData[key] || [];
+                    let total;
+                    if (regionKey) {
+                        // Find the value for this specific region
+                        const match = regions.find(entry => Array.isArray(entry) && entry[0] === regionKey);
+                        total = match && typeof match[1] === 'number' ? match[1] : 0;
+                    } else {
+                        // Sum across all regions
+                        total = regions.reduce((sum, entry) => {
+                            const value = Array.isArray(entry) ? entry[1] : 0;
+                            return sum + (typeof value === 'number' ? value : 0);
+                        }, 0);
+                    }
+                    const label = CONDITION_LABELS[key] || key;
+                    return `
+                        <article class="stat-card">
+                            <h3 class="stat-label">${label}</h3>
+                            <p class="stat-value">${total}</p>
+                            <p class="stat-subtext">Total cases across all regions</p>
+                        </article>
+                    `;
+                }).join('');
+
+                const headerTitle = regionKey
+                    ? `Key Statistics – ${regionName || 'Selected Region'}`
+                    : 'Key Statistics (All Conditions)';
+
+                const caption = regionKey
+                    ? 'Reported cases per condition in this region'
+                    : 'Sum of reported cases per condition across all regions';
+
+                statsContainer.innerHTML = `
+                    <div class="stats-header">
+                        <h2 class="stats-title">${headerTitle}</h2>
+                        <p class="stats-caption">${caption}</p>
+                    </div>
+                    <div class="stats-grid">
+                        ${cardsHtml}
+                    </div>
+                `;
+            }
+
+            rebuildVisibleConditionData();
+            renderConditionStats();
+
+            const HIGHLIGHT_COLOR = '#c45c26';   // Darker orange when selected
+            const OTHER_REGIONS_COLOR = '#f5d5c8';  // Light peach when another is selected
+
+            // Cities in Soccsksargen - shown when zoomed in
+            const cityData = [
+                { name: 'General Santos', lat: 6.1167, lon: 125.1667 },
+                { name: 'Koronadal', lat: 6.5, lon: 124.85 },
+                { name: 'Kidapawan', lat: 7.0083, lon: 125.0892 },
+                { name: 'Isulan', lat: 6.6294, lon: 124.605 },
+                { name: 'Alabel', lat: 6.1018, lon: 125.2908 },
+                { name: 'Tacurong', lat: 6.6833, lon: 124.6833 },
+                { name: 'Polomolok', lat: 6.2167, lon: 125.0667 },
+                { name: 'Tupi', lat: 6.3333, lon: 124.95 },
+                { name: 'Banga', lat: 6.4167, lon: 124.7833 },
+                { name: 'Surallah', lat: 6.3667, lon: 124.7333 },
+                { name: 'Glan', lat: 5.8167, lon: 125.2 },
+                { name: 'Maasim', lat: 5.8667, lon: 125.0 },
+                { name: 'Matalam', lat: 7.0833, lon: 124.9 }
+            ];
+
+            const ZOOM_THRESHOLD = 9;  // Cities only appear when closely zoomed in
+
+            function updateZoomLevels(chart) {
+                if (!chart.mapView) return;
+                const isZoomedIn = chart.mapView.zoom >= ZOOM_THRESHOLD;
+                const regionLabelsEnabled = !isZoomedIn;
+
+                const mapSeries = chart.series[0];
+                const citiesSeries = chart.series.find(s => s.options.id === 'cities-series');
+
+                if (mapSeries && (mapSeries.options.dataLabels || {}).enabled !== regionLabelsEnabled) {
+                    mapSeries.update({ dataLabels: { enabled: regionLabelsEnabled } }, false);
+                }
+                if (citiesSeries && citiesSeries.visible !== isZoomedIn) {
+                    citiesSeries.update({ visible: isZoomedIn }, false);
+                }
+            }
+
+            // Helper to clone region/value pairs so Highcharts
+            // does not mutate our original conditionData.
+            function cloneRegions(regions) {
+                return regions.map(entry =>
+                    Array.isArray(entry) ? [entry[0], entry[1]] : entry
+                );
+            }
+
+            function splitRegionData(regions) {
+                const clickable = [];
+                const staticRegions = [];
+                regions.forEach(entry => {
+                    if (!Array.isArray(entry)) return;
+                    if (SOCCSKSARGEN_CLICKABLE_KEYS.has(entry[0])) {
+                        clickable.push([entry[0], entry[1]]);
+                    } else {
+                        staticRegions.push([entry[0], entry[1]]);
+                    }
+                });
+                return { clickable, staticRegions };
+            }
+
+            async function loadTopology() {
+                let lastError = null;
+                for (const url of TOPOLOGY_URLS) {
+                    try {
+                        const response = await fetch(url);
+                        if (!response.ok) {
+                            throw new Error(`Fetch failed (${response.status})`);
+                        }
+                        return await response.json();
+                    } catch (error) {
+                        lastError = error;
+                    }
+                }
+                throw lastError || new Error('Unable to load topology data.');
+            }
+
+            function buildSoccsksargenTopology(phTopology) {
+                const defaultObject = phTopology && phTopology.objects && phTopology.objects.default;
+                const geometries = (defaultObject && defaultObject.geometries) || [];
+                const soccsksargenGeometries = geometries.filter(geometry => {
+                    const key = geometry && geometry.properties ? geometry.properties['hc-key'] : '';
+                    return SOCCSKSARGEN_DISPLAY_KEYS.has(key);
+                });
+                if (!soccsksargenGeometries.length) return phTopology;
+
+                return {
+                    ...phTopology,
+                    objects: {
+                        ...phTopology.objects,
+                        default: {
+                            ...defaultObject,
+                            geometries: soccsksargenGeometries
+                        }
+                    }
+                };
+            }
+
+            // Load Philippines topology; if blocked, fall back to local simplified map
+            let mapData = LOCAL_SOCCSKSARGEN_MAP;
+            try {
+                const phTopology = await loadTopology();
+                mapData = buildSoccsksargenTopology(phTopology);
+            } catch (error) {
+                console.error('Failed to load Philippines topology:', error);
+                const infoEl = document.getElementById('region-info');
+                if (infoEl) {
+                    if (window.location.protocol === 'file:') {
+                        infoEl.textContent = 'Map file fetch is blocked on file://. Run a local server (example: python -m http.server 8080) then open http://localhost:8080.';
+                    } else {
+                        infoEl.textContent = 'Map source unavailable. Using local simplified Soccsksargen map.';
+                    }
+                    infoEl.classList.add('visible');
+                }
+            }
+
+            // Initial data = total cases across active categories
+            const data = cloneRegions(getCombinedRegionData());
+
+            function blendColor(startHex, endHex, ratio) {
+                const t = Math.max(0, Math.min(1, ratio));
+                const s = startHex.replace('#', '');
+                const e = endHex.replace('#', '');
+                const sr = parseInt(s.slice(0, 2), 16);
+                const sg = parseInt(s.slice(2, 4), 16);
+                const sb = parseInt(s.slice(4, 6), 16);
+                const er = parseInt(e.slice(0, 2), 16);
+                const eg = parseInt(e.slice(2, 4), 16);
+                const eb = parseInt(e.slice(4, 6), 16);
+                const rr = Math.round(sr + (er - sr) * t).toString(16).padStart(2, '0');
+                const rg = Math.round(sg + (eg - sg) * t).toString(16).padStart(2, '0');
+                const rb = Math.round(sb + (eb - sb) * t).toString(16).padStart(2, '0');
+                return `#${rr}${rg}${rb}`;
+            }
+
+            function drawFallbackMap(seriesData) {
+                const container = document.getElementById('container');
+                if (!container) return null;
+                const features = (LOCAL_SOCCSKSARGEN_MAP && LOCAL_SOCCSKSARGEN_MAP.features) || [];
+                if (!features.length) return null;
+
+                container.innerHTML = '';
+                const svgNS = 'http://www.w3.org/2000/svg';
+                const width = 900;
+                const height = 560;
+                const pad = 36;
+
+                const allPoints = [];
+                features.forEach(f => {
+                    const rings = (f.geometry && f.geometry.coordinates) || [];
+                    rings.forEach(r => r.forEach(p => allPoints.push(p)));
+                });
+                if (!allPoints.length) return null;
+
+                const minLon = Math.min(...allPoints.map(p => p[0]));
+                const maxLon = Math.max(...allPoints.map(p => p[0]));
+                const minLat = Math.min(...allPoints.map(p => p[1]));
+                const maxLat = Math.max(...allPoints.map(p => p[1]));
+                const lonRange = Math.max(0.0001, maxLon - minLon);
+                const latRange = Math.max(0.0001, maxLat - minLat);
+                const toX = lon => pad + ((lon - minLon) / lonRange) * (width - 2 * pad);
+                const toY = lat => height - pad - ((lat - minLat) / latRange) * (height - 2 * pad);
+
+                const valuesByKey = new Map();
+                seriesData.forEach(entry => {
+                    if (Array.isArray(entry)) valuesByKey.set(entry[0], entry[1]);
+                });
+
+                const numbers = Array.from(valuesByKey.values()).filter(v => typeof v === 'number');
+                const minVal = numbers.length ? Math.min(...numbers) : 0;
+                const maxVal = numbers.length ? Math.max(...numbers) : 1;
+                const valRange = Math.max(1, maxVal - minVal);
+                const baseColor = value => {
+                    if (typeof value !== 'number') return '#eef1f5';
+                    return blendColor('#f8e7df', '#c45c26', (value - minVal) / valRange);
+                };
+
+                const svg = document.createElementNS(svgNS, 'svg');
+                svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+                svg.setAttribute('width', '100%');
+                svg.setAttribute('height', '100%');
+
+                const pathsByKey = new Map();
+                const applyPaint = () => {
+                    pathsByKey.forEach((path, key) => {
+                        if (activeRegionKey && key === activeRegionKey) {
+                            path.setAttribute('fill', HIGHLIGHT_COLOR);
+                        } else if (activeRegionKey && key !== activeRegionKey) {
+                            path.setAttribute('fill', OTHER_REGIONS_COLOR);
+                        } else {
+                            path.setAttribute('fill', baseColor(valuesByKey.get(key)));
+                        }
+                    });
+                };
+
+                features.forEach(feature => {
+                    const props = feature.properties || {};
+                    const key = props['hc-key'];
+                    const name = props.name || key || 'Region';
+                    const rings = (feature.geometry && feature.geometry.coordinates) || [];
+                    if (!rings.length) return;
+                    const ring = rings[0];
+                    const pathData = ring.map((p, i) => `${i ? 'L' : 'M'} ${toX(p[0]).toFixed(2)} ${toY(p[1]).toFixed(2)}`).join(' ') + ' Z';
+
+                    const path = document.createElementNS(svgNS, 'path');
+                    path.setAttribute('d', pathData);
+                    path.setAttribute('stroke', '#8e8e8e');
+                    path.setAttribute('stroke-width', '1.2');
+                    path.setAttribute('vector-effect', 'non-scaling-stroke');
+                    const isClickable = SOCCSKSARGEN_CLICKABLE_KEYS.has(key);
+                    path.setAttribute('cursor', isClickable ? 'pointer' : 'default');
+                    path.setAttribute('pointer-events', isClickable ? 'auto' : 'none');
+                    path.addEventListener('click', () => {
+                        if (!SOCCSKSARGEN_CLICKABLE_KEYS.has(key)) {
+                            return;
+                        }
+                        if (activeRegionKey && activeRegionKey === key) {
+                            activeRegionKey = null;
+                            const infoEl = document.getElementById('region-info');
+                            if (infoEl) {
+                                infoEl.textContent = '';
+                                infoEl.classList.remove('visible');
+                            }
+                            renderConditionStats();
+                            applyPaint();
+                            return;
+                        }
+                        activeRegionKey = key;
+                        applyPaint();
+                        const infoEl = document.getElementById('region-info');
+                        if (infoEl) {
+                            const count = valuesByKey.has(key) ? valuesByKey.get(key) : '-';
+                            infoEl.innerHTML = `<strong>${name}</strong>: <span class="region-count">${count}</span> total cases (${getMapScopeLabel()})`;
+                            infoEl.classList.add('visible');
+                        }
+                        renderConditionStats(key, name);
+                    });
+
+                    pathsByKey.set(key, path);
+                    svg.appendChild(path);
+
+                    let cx = 0;
+                    let cy = 0;
+                    ring.forEach(p => {
+                        cx += toX(p[0]);
+                        cy += toY(p[1]);
+                    });
+                    cx /= ring.length;
+                    cy /= ring.length;
+
+                    const text = document.createElementNS(svgNS, 'text');
+                    if (SOCCSKSARGEN_CLICKABLE_KEYS.has(key)) {
+                        text.setAttribute('x', cx.toFixed(2));
+                        text.setAttribute('y', cy.toFixed(2));
+                        text.setAttribute('text-anchor', 'middle');
+                        text.setAttribute('dominant-baseline', 'middle');
+                        text.setAttribute('font-size', '11');
+                        text.setAttribute('fill', '#253046');
+                        text.setAttribute('pointer-events', 'none');
+                        text.textContent = name;
+                        svg.appendChild(text);
+                    }
+                });
+
+                container.appendChild(svg);
+                applyPaint();
+
+                return {
+                    update(nextData) {
+                        valuesByKey.clear();
+                        nextData.forEach(entry => {
+                            if (Array.isArray(entry)) valuesByKey.set(entry[0], entry[1]);
+                        });
+                        activeRegionKey = null;
+                        applyPaint();
+                    }
+                };
+            }
+
+            // Initialize chart or fallback map
+            let chart = null;
+            let fallbackMap = null;
+            if (typeof Highcharts === 'undefined' || typeof Highcharts.mapChart !== 'function') {
+                const infoEl = document.getElementById('region-info');
+                if (infoEl) {
+                    infoEl.textContent = 'Highcharts CDN is blocked. Using offline local map renderer.';
+                    infoEl.classList.add('visible');
+                }
+                fallbackMap = drawFallbackMap(data);
+            } else {
+                try {
+                chart = Highcharts.mapChart('container', {
+                chart: {
+                    map: mapData,
+                    events: {
+                        load: function() {
+                            updateZoomLevels(this);
+                        },
+                        redraw: function() {
+                            updateZoomLevels(this);
+                        }
+                    }
+                },
+                title: {
+                    text: 'Soccsksargen (Region XII)'
+                },
+                subtitle: {
+                    text: 'Showing only South Cotabato, Sarangani, and General Santos City.'
+                },
+                accessibility: {
+                    typeDescription: 'Map of Soccsksargen, Philippines.'
+                },
+                mapNavigation: {
+                    enabled: true,
+                    buttonOptions: {
+                        verticalAlign: 'bottom'
+                    }
+                },
+                colorAxis: {
+                    min: 0,
+                    tickPixelInterval: 100
+                },
+                tooltip: {
+                    enabled: true,
+                    useHTML: true,
+                    formatter: function() {
+                        const regionKey = this.point['hc-key'] || (this.point.properties && this.point.properties['hc-key']);
+                        const isTarget = SOCCSKSARGEN_CLICKABLE_KEYS.has(regionKey);
+                        if (!isTarget) return false;
+                        const value = this.point.value != null ? this.point.value : '-';
+                        const label = (this.point.properties && this.point.properties.name) || this.point.name;
+                        return '<b>' + label + '</b><br/>Value: ' + value;
+                    }
+                },
+                plotOptions: {
+                    map: {
+                        cursor: 'default',
+                        allowPointSelect: false,
+                        enableMouseTracking: false,
+                        stickyTracking: false,
+                        states: {
+                            hover: {
+                                enabled: false
+                            },
+                            select: {
+                                enabled: false
+                            },
+                            inactive: {
+                                opacity: 1
+                            }
+                        }
+                    }
+                },
+                series: [{
+                    id: 'regions-static',
+                    data: splitRegionData(data).staticRegions,
+                    keys: ['hc-key', 'value'],
+                    joinBy: 'hc-key',
+                    name: 'Regions (Static)',
+                    allAreas: true,
+                    enableMouseTracking: false,
+                    nullColor: '#eef1f5',
+                    borderColor: '#A0A0A0',
+                    dataLabels: {
+                        enabled: false
+                    }
+                }, {
+                    id: 'regions-interactive',
+                    data: splitRegionData(data).clickable,
+                    keys: ['hc-key', 'value'],
+                    joinBy: 'hc-key',
+                    name: 'Regions',
+                    allAreas: false,
+                    enableMouseTracking: true,
+                    nullColor: '#eef1f5',
+                    borderColor: '#A0A0A0',
+                    dataLabels: {
+                        enabled: true,
+                        format: '{point.properties.name}'
+                    },
+                    states: {
+                        hover: {
+                            enabled: true,
+                            color: '#e07d4a',
+                            borderColor: '#A0A0A0'
+                        },
+                        inactive: {
+                            opacity: 1
+                        }
+                    },
+                    point: {
+                        events: {
+                            mouseOver: function() {
+                                const key = this['hc-key'] || (this.properties && this.properties['hc-key']);
+                                this.series.chart.container.style.cursor = SOCCSKSARGEN_CLICKABLE_KEYS.has(key) ? 'pointer' : 'default';
+                            },
+                            mouseOut: function() {
+                                this.series.chart.container.style.cursor = 'default';
+                            },
+                            click: function() {
+                                const chart = this.series.chart;
+                                const mapSeries = chart.get('regions-interactive');
+                                const regionName = (this.properties && this.properties.name) || this.name || 'Region';
+                                const regionKey = this['hc-key'] || (this.properties && this.properties['hc-key']);
+                                if (!SOCCSKSARGEN_CLICKABLE_KEYS.has(regionKey)) {
+                                    return;
+                                }
+
+                                // If the same region is clicked again, clear selection
+                                if (activeRegionKey && regionKey === activeRegionKey) {
+                                    activeRegionKey = null;
+                                    mapSeries.points.forEach(p => {
+                                        p.select(false, false);
+                                        p.update({ color: null }, false);
+                                    });
+                                    chart.redraw();
+
+                                    const infoEl = document.getElementById('region-info');
+                                    if (infoEl) {
+                                        infoEl.textContent = '';
+                                        infoEl.classList.remove('visible');
+                                    }
+
+                                    // Back to overall totals
+                                    renderConditionStats();
+                                    return;
+                                }
+
+                                // Select this region and dim others
+                                activeRegionKey = regionKey;
+                                mapSeries.points.forEach(p => {
+                                    const isThis = p === this;
+                                    p.select(isThis, false);
+                                    p.update(
+                                        { color: isThis ? HIGHLIGHT_COLOR : OTHER_REGIONS_COLOR },
+                                        false
+                                    );
+                                });
+                                chart.redraw();
+
+                                const count = this.value != null ? this.value : '-';
+                                const infoEl = document.getElementById('region-info');
+                                if (infoEl) {
+                                    infoEl.textContent = '';
+                                    infoEl.innerHTML = '<strong>' + regionName + '</strong>: <span class="region-count">' + count + '</span> total cases (' + getMapScopeLabel() + ')';
+                                    infoEl.classList.add('visible');
+                                }
+
+                                if (regionKey) {
+                                    renderConditionStats(regionKey, regionName);
+                                }
+                            }
+                        }
+                    }
+                }, {
+                    id: 'cities-series',
+                    type: 'mappoint',
+                    name: 'Cities',
+                    data: cityData,
+                    visible: false,
+                    enableMouseTracking: false,
+                    marker: {
+                        symbol: 'mapmarker',
+                        radius: 6,
+                        lineWidth: 1,
+                        lineColor: '#fff'
+                    },
+                    dataLabels: {
+                        enabled: true,
+                        format: '{point.name}',
+                        style: { fontSize: '10px' },
+                        verticalAlign: 'bottom'
+                    },
+                    tooltip: {
+                        pointFormat: '<b>{point.name}</b><br>Lat: {point.lat:.2f}, Lon: {point.lon:.2f}'
+                    }
+                }]
+            });
+            } catch (error) {
+                console.error('Failed to render map chart:', error);
+                const infoEl = document.getElementById('region-info');
+                if (infoEl) {
+                    infoEl.textContent = `Highcharts render failed: ${error.message}. Using offline local map renderer.`;
+                    infoEl.classList.add('visible');
+                }
+                fallbackMap = drawFallbackMap(data);
+                chart = null;
+            }
+            }
+
+            function applySelectedConditionData() {
+                const selectedData = cloneRegions(getCombinedRegionData());
+                activeRegionKey = null;
+                if (regionInfoEl) {
+                    regionInfoEl.textContent = '';
+                    regionInfoEl.classList.remove('visible');
+                }
+                renderConditionStats();
+
+                if (chart) {
+                    const split = splitRegionData(selectedData);
+                    const staticSeries = chart.get('regions-static');
+                    const interactiveSeries = chart.get('regions-interactive');
+                    if (staticSeries) {
+                        staticSeries.setData(split.staticRegions, false);
+                    }
+                    if (interactiveSeries) {
+                        interactiveSeries.setData(split.clickable, false);
+                    }
+                    chart.redraw();
+                } else if (fallbackMap) {
+                    fallbackMap.update(selectedData);
+                }
+            }
+
+            function applyImportedRows(rows, sourceLabel) {
+                if (!rows || rows.length < 2) {
+                    showImportStatus('CSV has no data rows.', true);
+                    return false;
+                }
+
+                const headers = rows[0].map(cell => String(cell || '').trim());
+                const categoryIdx = findHeaderIndex(headers, ['predicted_category', 'predicted category', 'top_class', 'top class', 'category']);
+                const assignedCategoriesIdx = findHeaderIndex(headers, ['assigned_categories', 'predicted_categories', 'resolved_categories', 'category_list']);
+                const assignmentModeIdx = findHeaderIndex(headers, ['assignment_mode', 'mode']);
+                const isSubsetIdx = findHeaderIndex(headers, ['is_subset']);
+                const locationIdx = findHeaderIndex(headers, ['location', 'loc', 'place', 'city', 'municipality', 'province', 'barangay', 'school', 'campus', 'area']);
+                const dateIdx = findHeaderIndex(headers, ['date', 'timestamp', 'time', 'created', 'posted']);
+
+                if (categoryIdx < 0 || locationIdx < 0) {
+                    showImportStatus('CSV must include category and location columns (for example: predicted_category and location).', true);
+                    return false;
+                }
+
+                const importableConditions = getConditionKeys();
+                const aggregated = makeEmptyConditionData();
+                const aggregatedPlatform = {};
+                const aggregatedYear = {};
+                let usedRows = 0;
+                let categoryAssignments = 0;
+                let skipped = 0;
+                let withDate = 0;
+                const platformIdx = findHeaderIndex(headers, ['platform', 'source', 'app', 'site', 'channel', 'social media']);
+
+                for (let i = 1; i < rows.length; i += 1) {
+                    const row = rows[i];
+                    const region = normalizeLocationKey(row[locationIdx]);
+                    if (!REGION_KEYS.includes(region)) {
+                        skipped += 1;
+                        continue;
+                    }
+
+                    const assignmentMode = assignmentModeIdx >= 0 ? String(row[assignmentModeIdx] || '').trim().toLowerCase() : '';
+                    const isSubsetRow = assignmentMode === 'subset' || (isSubsetIdx >= 0 && String(row[isSubsetIdx] || '').trim().toLowerCase() === 'true');
+                    if (!viewSubset && isSubsetRow) {
+                        skipped += 1;
+                        continue;
+                    }
+
+                    const rawAssigned = assignedCategoriesIdx >= 0
+                        ? String(row[assignedCategoriesIdx] || '')
+                        : String(row[categoryIdx] || '');
+                    const parsedConditions = rawAssigned
+                        .split(/[|;,]/)
+                        .map(value => normalizeConditionKey(value))
+                        .filter(value => importableConditions.includes(value));
+                    const conditions = [...new Set(parsedConditions)];
+
+                    if (!conditions.length) {
+                        skipped += 1;
+                        continue;
+                    }
+
+                    usedRows += 1;
+                    if (dateIdx >= 0 && String(row[dateIdx] || '').trim()) withDate += 1;
+                    const year = dateIdx >= 0 ? normalizeYear(row[dateIdx]) : 'Unknown';
+                    if (!aggregatedYear[year]) {
+                        aggregatedYear[year] = {};
+                        getConditionKeys().forEach(key => { aggregatedYear[year][key] = 0; });
+                    }
+
+                    const platformValue = platformIdx >= 0 ? String(row[platformIdx] || '').trim() : '';
+                    const platform = platformValue || 'Unknown';
+                    if (!aggregatedPlatform[platform]) {
+                        aggregatedPlatform[platform] = {};
+                        getConditionKeys().forEach(key => { aggregatedPlatform[platform][key] = 0; });
+                    }
+
+                    conditions.forEach(condition => {
+                        const bucket = aggregated[condition].find(entry => entry[0] === region);
+                        if (bucket) bucket[1] += 1;
+                        aggregatedYear[year][condition] += 1;
+                        aggregatedPlatform[platform][condition] += 1;
+                        categoryAssignments += 1;
+                    });
+                }
+
+                if (!usedRows) {
+                    showImportStatus('No usable rows found for South Cotabato, Sarangani, or General Santos City.', true);
+                    return false;
+                }
+
+                fullConditionData = aggregated;
+                rebuildVisibleConditionData();
+                platformDistribution = aggregatedPlatform;
+                yearTrendDistribution = aggregatedYear;
+                importedRowsCache = rows;
+                importedSourceLabel = sourceLabel || '';
+                applySelectedConditionData();
+                renderPlatformChart();
+                renderYearTrendChart();
+                const label = sourceLabel ? `${sourceLabel}: ` : '';
+                showImportStatus(`${label}Loaded ${usedRows} rows into the map (${categoryAssignments} category assignments, ${skipped} skipped). Rows with date values: ${withDate}.`, false);
+                return true;
+            }
+
+            async function importResultsCsv() {
+                if (!resultsFileEl || !resultsFileEl.files || !resultsFileEl.files.length) {
+                    showImportStatus('Select a CSV file first.', true);
+                    return;
+                }
+
+                const file = resultsFileEl.files[0];
+                const text = await file.text();
+                const rows = parseCsv(text);
+                applyImportedRows(rows, `Imported ${file.name}`);
+            }
+
+            function resetToDefaultData() {
+                fullConditionData = normalizeConditionData(defaultConditionData);
+                rebuildVisibleConditionData();
+                platformDistribution = {};
+                yearTrendDistribution = {};
+                importedRowsCache = null;
+                importedSourceLabel = '';
+                applySelectedConditionData();
+                renderPlatformChart();
+                renderYearTrendChart();
+                showImportStatus('Map reset to default values from condition-data.js.', false);
+                if (resultsFileEl) resultsFileEl.value = '';
+            }
+
+            async function autoLoadWebsiteCsv() {
+                const candidates = ['analysis_predictions_platform.csv', 'analysis_predictions_ready.csv', 'analysis_predictions_latest.csv', 'analysis_predictions.csv'];
+                for (const path of candidates) {
+                    try {
+                        const response = await fetch(path, { cache: 'no-store' });
+                        if (!response.ok) continue;
+                        const text = await response.text();
+                        const rows = parseCsv(text);
+                        if (applyImportedRows(rows, `Auto-loaded ${path}`)) {
+                            return;
+                        }
+                    } catch (error) {
+                        // Try next candidate silently.
+                    }
+                }
+            }
+
+            if (viewSubsetEl) {
+                viewSubsetEl.addEventListener('change', () => {
+                    viewSubset = Boolean(viewSubsetEl.checked);
+                    if (importedRowsCache && importedRowsCache.length > 1) {
+                        applyImportedRows(importedRowsCache, importedSourceLabel || 'Updated View Subset');
+                    } else {
+                        rebuildVisibleConditionData();
+                        applySelectedConditionData();
+                        renderPlatformChart();
+                        renderYearTrendChart();
+                        showImportStatus(
+                            viewSubset ? 'Subset rows are now visible.' : 'Subset rows are now hidden.',
+                            false
+                        );
+                    }
+                });
+            }
+
+            if (loadResultsBtnEl) {
+                loadResultsBtnEl.addEventListener('click', () => {
+                    importResultsCsv().catch(error => showImportStatus(`Import failed: ${error.message}`, true));
+                });
+            }
+            if (resetResultsBtnEl) {
+                resetResultsBtnEl.addEventListener('click', resetToDefaultData);
+            }
+            renderPlatformChart();
+            renderYearTrendChart();
+            autoLoadWebsiteCsv();
+
+        })();
+    </script>
+</body>
+</html>

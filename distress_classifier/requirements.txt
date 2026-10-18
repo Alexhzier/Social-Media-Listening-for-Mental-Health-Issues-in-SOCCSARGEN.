@@ -1,0 +1,7 @@
+# CNN-LSTM distress-pattern classifier (thesis / research)
+# Use Python 3.10, 3.11, or 3.12 (TensorFlow does not support 3.14 yet).
+
+tensorflow>=2.12
+numpy>=1.21
+scikit-learn>=1.0
+matplotlib>=3.7
